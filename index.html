@@ -1,1 +1,1431 @@
-HTML
+
+import SwiftUI
+import AudioToolbox
+
+// MARK: - APP
+
+@main
+struct UnoCardGameApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+}
+// MARK: - CARD MODEL
+
+enum UnoColor: String, CaseIterable {
+    case red, blue, green, yellow, wild
+    
+    var color: Color {
+        switch self {
+        case .red: return Color(red: 1.0, green: 0.48, blue: 0.56)
+        case .blue: return Color(red: 0.40, green: 0.70, blue: 1.0)
+        case .green: return Color(red: 0.38, green: 0.78, blue: 0.60)
+        case .yellow: return Color(red: 1.0, green: 0.78, blue: 0.35)
+        case .wild: return Color(red: 0.68, green: 0.48, blue: 0.90)
+        }
+    }
+}
+
+struct UnoCard: Identifiable, Equatable {
+    let id = UUID()
+    let color: UnoColor
+    let value: String
+    
+    var isWild: Bool { color == .wild }
+    
+    static func == (lhs: UnoCard, rhs: UnoCard) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+// MARK: - AI DIFFICULTY
+
+enum AIDifficulty: String, CaseIterable {
+    case easy
+    case medium
+    case hard
+}
+
+// MARK: - MAIN VIEW
+
+struct ContentView: View {
+    @State private var language = "TH"
+    @State private var gameStarted = false
+    @State private var difficulty: AIDifficulty = .medium
+    
+    @State private var hands: [[UnoCard]] = [[], [], [], []]
+    @State private var deck: [UnoCard] = []
+    @State private var discard: [UnoCard] = []
+    
+    @State private var currentPlayer = 0
+    @State private var direction = 1
+    @State private var activeColor: UnoColor = .red
+    
+    @State private var isBusy = false
+    @State private var isDealing = false
+    @State private var dealProgress = 0
+    
+    @State private var message = ""
+    @State private var showWinner = false
+    @State private var winnerName = ""
+    @State private var showRules = false
+    @State private var unoCalled = false
+    
+    @State private var playedCardID: UUID? = nil
+    
+    private let aiNames = ["", "AI Left", "AI Top", "AI Right"]
+    private var isThai: Bool { language == "TH" }
+    
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.08, green: 0.13, blue: 0.28),
+                    Color(red: 0.17, green: 0.27, blue: 0.43)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            
+            if gameStarted {
+                gameScreen
+            } else {
+                homeScreen
+            }
+        }
+        .alert(isThai ? "จบเกม!" : "Game Over!", isPresented: $showWinner) {
+            Button(isThai ? "หน้าหลัก" : "Home") {
+                gameStarted = false
+            }
+            Button(isThai ? "เล่นอีกครั้ง" : "Play Again") {
+                startGame()
+            }
+        } message: {
+            Text(isThai ? "\(winnerName) ชนะแล้ว!" : "\(winnerName) wins!")
+        }
+        .sheet(isPresented: $showRules) {
+            rulesView
+                .presentationDetents([.medium, .large])
+        }
+    }
+    
+    // MARK: - HOME SCREEN
+    
+    private var homeScreen: some View {
+        VStack(spacing: 16) {
+            HStack {
+                Spacer()
+                
+                Menu {
+                    Button("ไทย") { language = "TH" }
+                    Button("English") { language = "EN" }
+                } label: {
+                    Label(
+                        language == "TH" ? "ไทย" : "English",
+                        systemImage: "globe"
+                    )
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 10)
+                    .background(.white.opacity(0.15))
+                    .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 12)
+            
+            Spacer(minLength: 5)
+            
+            VStack(spacing: 4) {
+                Text("UNO")
+                    .font(.system(size: 72, weight: .black, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [.yellow, .orange, .red],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .shadow(color: .black.opacity(0.3), radius: 6, y: 5)
+                
+                Text(isThai ? "" : "The Colorful Card Game")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+            
+            HStack(spacing: -15) {
+                previewCard("7", color: .red, rotation: -15)
+                previewCard("2", color: .blue, rotation: -7)
+                previewCard("5", color: .green, rotation: 7)
+                previewCard("UNO", color: .yellow, rotation: 15)
+            }
+            .padding(.vertical, 10)
+            
+            Text(isThai ? "ผู้เล่น 1 คน + AI 3 คน" : "1 Player + 3 AI Opponents")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.white)
+            
+            // DIFFICULTY MENU
+            
+            VStack(spacing: 8) {
+                Text(isThai ? "เลือกระดับความยาก" : "Choose Difficulty")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.white)
+                
+                HStack(spacing: 8) {
+                    difficultyButton(
+                        title: isThai ? "ง่าย" : "Easy",
+                        emoji: "🌱",
+                        level: .easy,
+                        color: .green
+                    )
+                    
+                    difficultyButton(
+                        title: isThai ? "กลาง" : "Medium",
+                        emoji: "⚔️",
+                        level: .medium,
+                        color: .blue
+                    )
+                    
+                    difficultyButton(
+                        title: isThai ? "ยาก" : "Hard",
+                        emoji: "🔥",
+                        level: .hard,
+                        color: .red
+                    )
+                }
+                .frame(maxWidth: 300)
+                
+                Text(difficultyDescription)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .frame(height: 28)
+            }
+            .padding(.horizontal, 20)
+            
+            Button {
+                startGame()
+            } label: {
+                Label(
+                    isThai ? "เริ่มเกม" : "START GAME",
+                    systemImage: "play.fill"
+                )
+                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .foregroundColor(.black)
+                .frame(maxWidth: 250)
+                .padding(.vertical, 16)
+                .background(Color.yellow)
+                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.25), radius: 8, y: 5)
+            }
+            
+            Button {
+                showRules = true
+            } label: {
+                Label(
+                    isThai ? "วิธีเล่น" : "How to Play",
+                    systemImage: "questionmark.circle"
+                )
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.white)
+            }
+            
+            Spacer(minLength: 5)
+            
+            Text(isThai
+                 ? "จัดทำโดย นางสาว ดวงกมล ศรีรัตน์ทวีกุล"
+                 : "Created by Duangkamon Srirattaveekul")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundColor(.white.opacity(0.7))
+            .padding(.bottom, 12)
+        }
+    }
+    
+    // MARK: - DIFFICULTY BUTTON
+    
+    private func difficultyButton(
+        title: String,
+        emoji: String,
+        level: AIDifficulty,
+        color: Color
+    ) -> some View {
+        Button {
+            difficulty = level
+        } label: {
+            VStack(spacing: 4) {
+                Text(emoji)
+                    .font(.system(size: 20))
+                
+                Text(title)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 58)
+            .background(
+                difficulty == level
+                ? color.opacity(0.35)
+                : Color.white.opacity(0.10)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        difficulty == level
+                        ? color
+                        : Color.white.opacity(0.3),
+                        lineWidth: difficulty == level ? 2 : 1
+                    )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private var difficultyDescription: String {
+        switch difficulty {
+        case .easy:
+            return isThai
+            ? "AI เลือกไพ่แบบสุ่ม เล่นสบาย ๆ"
+            : "AI plays random cards"
+            
+        case .medium:
+            return isThai
+            ? "AI เลือกใช้ไพ่พิเศษและดูสีในมือ"
+            : "AI uses special cards and considers its hand"
+            
+        case .hard:
+            return isThai
+            ? "AI วางแผนและพยายามขัดขวางคู่แข่ง"
+            : "AI plans moves and disrupts opponents"
+        }
+    }
+    
+    private func previewCard(
+        _ value: String,
+        color: UnoColor,
+        rotation: Double
+    ) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(color.color)
+            
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.white, lineWidth: 3)
+            
+            Ellipse()
+                .fill(.white.opacity(0.95))
+                .frame(width: 48, height: 70)
+                .rotationEffect(.degrees(-25))
+            
+            Text(value)
+                .font(.system(
+                    size: value == "UNO" ? 17 : 38,
+                    weight: .black,
+                    design: .rounded
+                ))
+                .foregroundColor(color.color)
+                .rotationEffect(.degrees(-25))
+            
+            Image(systemName: "sparkle")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.white)
+                .offset(x: 20, y: -35)
+        }
+        .frame(width: 66, height: 100)
+        .rotationEffect(.degrees(rotation))
+        .shadow(color: .black.opacity(0.25), radius: 5, y: 4)
+    }
+    
+    // MARK: - GAME SCREEN
+    
+    private var gameScreen: some View {
+        GeometryReader { geometry in
+            ZStack {
+                RoundedRectangle(cornerRadius: 42)
+                    .fill(Color(red: 0.10, green: 0.46, blue: 0.33))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 42)
+                            .stroke(.white.opacity(0.2), lineWidth: 5)
+                            .padding(8)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 22)
+                
+                VStack(spacing: 0) {
+                    aiPlayerView(index: 2)
+                        .padding(.top, 48)
+                    
+                    Spacer(minLength: 8)
+                    
+                    HStack(spacing: 2) {
+                        aiPlayerView(index: 1)
+                            .frame(width: 100)
+                        
+                        Spacer(minLength: 0)
+                        
+                        centerPiles
+                            .frame(maxWidth: .infinity)
+                        
+                        Spacer(minLength: 0)
+                        
+                        aiPlayerView(index: 3)
+                            .frame(width: 100)
+                    }
+                    .padding(.horizontal, 8)
+                    
+                    Spacer(minLength: 8)
+                    
+                    playerArea
+                        .padding(.bottom, 12)
+                }
+                
+                // TOP NAVIGATION
+                
+                VStack {
+                    HStack {
+                        Button {
+                            gameStarted = false
+                        } label: {
+                            Image(systemName: "house.fill")
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(11)
+                                .background(.black.opacity(0.25))
+                                .clipShape(Circle())
+                        }
+                        
+                        Spacer()
+                        
+                        Text("UNO")
+                            .font(.system(
+                                size: 23,
+                                weight: .black,
+                                design: .rounded
+                            ))
+                            .foregroundColor(.yellow)
+                        
+                        Spacer()
+                        
+                        Button {
+                            showRules = true
+                        } label: {
+                            Image(systemName: "questionmark.circle.fill")
+                                .font(.system(size: 21, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(8)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    
+                    Spacer()
+                }
+                
+                // MESSAGE
+                
+                VStack {
+                    Spacer()
+                    
+                    Text(message)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(.black.opacity(0.35))
+                        .clipShape(Capsule())
+                        .opacity(message.isEmpty ? 0 : 1)
+                        .padding(.bottom, 135)
+                }
+                
+                // DEALING OVERLAY
+                
+                if isDealing {
+                    dealingOverlay
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.black.opacity(0.18))
+                        .transition(.opacity)
+                        .zIndex(10)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+    }
+    
+    // MARK: - DEALING ANIMATION
+    
+    private var dealingOverlay: some View {
+        VStack(spacing: 15) {
+            HStack(spacing: -20) {
+                ForEach(0..<4, id: \.self) { index in
+                    cardBack()
+                        .rotationEffect(.degrees(Double(index - 2) * 11))
+                        .offset(y: index.isMultiple(of: 2) ? -8 : 8)
+                        .scaleEffect(1.08)
+                }
+            }
+            
+            Text(isThai ? "กำลังแจกไพ่..." : "Dealing Cards...")
+                .font(.system(size: 20, weight: .black, design: .rounded))
+                .foregroundColor(.white)
+            
+            ProgressView(value: Double(dealProgress), total: 28)
+                .tint(.yellow)
+                .frame(width: 180)
+            
+            Text("\(dealProgress) / 28")
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .monospacedDigit()
+        }
+        .padding(25)
+        .background(.black.opacity(0.78))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(.white.opacity(0.25), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.3), radius: 15, y: 8)
+    }
+    
+    // MARK: - AI PLAYER
+    
+    private func aiPlayerView(index: Int) -> some View {
+        VStack(spacing: 5) {
+            ZStack {
+                Circle()
+                    .fill(
+                        currentPlayer == index
+                        ? Color.yellow
+                        : Color.white.opacity(0.95)
+                    )
+                    .frame(width: 42, height: 42)
+                
+                Image(systemName: "person.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.purple.opacity(0.8))
+            }
+            
+            Text(aiNames[index])
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            
+            Text(isThai
+                 ? "เหลือ \(hands[index].count) ใบ"
+                 : "\(hands[index].count) cards left")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                currentPlayer == index
+                ? Color.orange.opacity(0.85)
+                : Color.black.opacity(0.25)
+            )
+            .clipShape(Capsule())
+            
+            ZStack(alignment: .leading) {
+                ForEach(0..<hands[index].count, id: \.self) { cardIndex in
+                    cardBack(width: 40, height: 58)
+                        .offset(x: CGFloat(cardIndex) * 8)
+                }
+            }
+            .frame(
+                width: hands[index].count > 0
+                ? 40 + CGFloat(hands[index].count - 1) * 8
+                : 0,
+                height: 62,
+                alignment: .leading
+            )
+        }
+        .padding(5)
+        .background(
+            currentPlayer == index
+            ? Color.yellow.opacity(0.18)
+            : Color.clear
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    currentPlayer == index
+                    ? Color.yellow
+                    : Color.white.opacity(0.12),
+                    lineWidth: currentPlayer == index ? 2 : 1
+                )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+    
+    // MARK: - HUMAN PLAYER AREA
+    
+    private var playerArea: some View {
+        VStack(spacing: 7) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isThai ? "คุณ" : "You")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                    
+                    Text(isThai
+                         ? "การ์ด \(hands[0].count) ใบ"
+                         : "\(hands[0].count) cards")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
+                }
+                
+                Spacer()
+                
+                if currentPlayer == 0 && !isDealing {
+                    Text(isThai ? "ตาของคุณ" : "YOUR TURN")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.yellow)
+                        .clipShape(Capsule())
+                }
+                
+                Button {
+                    callUno()
+                } label: {
+                    Text("UNO!")
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 8)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                }
+                .disabled(
+                    hands[0].count != 1 ||
+                    currentPlayer != 0 ||
+                    isDealing
+                )
+                .opacity(hands[0].count == 1 ? 1 : 0.5)
+            }
+            .padding(.horizontal, 18)
+            
+            GeometryReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: -8) {
+                        ForEach(hands[0]) { card in
+                            Button {
+                                playPlayerCard(card)
+                            } label: {
+                                cardView(card, small: false)
+                                    .scaleEffect(0.9)
+                                    .opacity(
+                                        canPlay(card) && currentPlayer == 0
+                                        ? 1
+                                        : 0.65
+                                    )
+                                    .offset(
+                                        y: canPlay(card) && currentPlayer == 0
+                                        ? -5
+                                        : 0
+                                    )
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .move(edge: .bottom)
+                                                .combined(with: .opacity),
+                                            removal: .scale
+                                                .combined(with: .opacity)
+                                        )
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(
+                                currentPlayer != 0 ||
+                                isBusy ||
+                                isDealing ||
+                                !canPlay(card)
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+                    .frame(
+                        minWidth: proxy.size.width,
+                        alignment: .center
+                    )
+                    .animation(
+                        .spring(response: 0.35, dampingFraction: 0.72),
+                        value: hands[0]
+                    )
+                }
+            }
+            .frame(height: 145)
+            
+            Button {
+                drawForPlayer()
+            } label: {
+                Label(
+                    isThai ? "จั่วการ์ด" : "Draw Card",
+                    systemImage: "plus.circle.fill"
+                )
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.black.opacity(0.25))
+                .clipShape(Capsule())
+            }
+            .disabled(currentPlayer != 0 || isBusy || isDealing)
+        }
+    }
+    
+    // MARK: - CENTER PILES
+    
+    private var centerPiles: some View {
+        VStack(spacing: 8) {
+            Text(isThai ? "สีที่กำลังเล่น" : "ACTIVE COLOR")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.white.opacity(0.8))
+            
+            Circle()
+                .fill(activeColor.color)
+                .frame(width: 18, height: 18)
+                .overlay {
+                    Circle().stroke(.white, lineWidth: 2)
+                }
+            
+            HStack(spacing: 12) {
+                VStack(spacing: 5) {
+                    if let topCard = discard.last {
+                        cardView(topCard, small: false)
+                            .scaleEffect(1.1)
+                            .id(topCard.id)
+                            .rotationEffect(
+                                .degrees(playedCardID == topCard.id ? 8 : 0)
+                            )
+                            .transition(
+                                .scale(scale: 0.5)
+                                .combined(with: .opacity)
+                            )
+                            .animation(
+                                .spring(
+                                    response: 0.4,
+                                    dampingFraction: 0.55
+                                ),
+                                value: playedCardID
+                            )
+                    } else {
+                        cardBack(width: 54, height: 78)
+                    }
+                    
+                    Text(isThai ? "กองทิ้ง" : "Discard")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                
+                VStack(spacing: 5) {
+                    Button {
+                        drawForPlayer()
+                    } label: {
+                        cardBack(width: 54, height: 78)
+                            .overlay {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 22, weight: .black))
+                                    .foregroundColor(.white)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(currentPlayer != 0 || isBusy || isDealing)
+                    
+                    Text(isThai ? "กองจั่ว" : "Draw")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                }
+            }
+        }
+        .padding(8)
+        .background(.black.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+    
+    // MARK: - CUTE CARD DESIGN
+    
+    private func cardView(_ card: UnoCard, small: Bool) -> some View {
+        let width: CGFloat = small ? 54 : 66
+        let height: CGFloat = small ? 78 : 98
+        
+        return ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            card.isWild
+                            ? Color(red: 0.75, green: 0.55, blue: 0.98)
+                            : card.color.color,
+                            card.isWild
+                            ? Color(red: 0.48, green: 0.30, blue: 0.80)
+                            : card.color.color.opacity(0.8)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.white, lineWidth: 3)
+            
+            Ellipse()
+                .fill(.white.opacity(0.96))
+                .frame(
+                    width: width * 0.72,
+                    height: height * 0.78
+                )
+                .rotationEffect(.degrees(-25))
+            
+            Text(card.value)
+                .font(.system(
+                    size: card.value.count > 2
+                    ? (small ? 10 : 13)
+                    : (small ? 23 : 29),
+                    weight: .black,
+                    design: .rounded
+                ))
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+                .foregroundColor(card.isWild ? .purple : card.color.color)
+                .rotationEffect(.degrees(-25))
+            
+            Image(systemName: "sparkle")
+                .font(.system(size: small ? 8 : 11, weight: .bold))
+                .foregroundColor(.white.opacity(0.9))
+                .offset(x: width * 0.32, y: -height * 0.37)
+            
+            Image(systemName: "heart.fill")
+                .font(.system(size: small ? 7 : 9))
+                .foregroundColor(.white.opacity(0.85))
+                .offset(x: -width * 0.32, y: height * 0.37)
+            
+            if card.isWild {
+                VStack(spacing: 2) {
+                    HStack(spacing: 2) {
+                        Circle().fill(Color.red)
+                        Circle().fill(Color.blue)
+                    }
+                    
+                    HStack(spacing: 2) {
+                        Circle().fill(Color.yellow)
+                        Circle().fill(Color.green)
+                    }
+                }
+                .frame(width: 17, height: 17)
+                .offset(x: width * 0.28, y: -height * 0.27)
+            }
+        }
+        .frame(width: width, height: height)
+        .shadow(color: .black.opacity(0.25), radius: 4, y: 3)
+    }
+    
+    // MARK: - CUTE CARD BACK
+    
+    private func cardBack(
+        width: CGFloat = 45,
+        height: CGFloat = 65
+    ) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.75, green: 0.48, blue: 0.92),
+                            Color(red: 1.0, green: 0.48, blue: 0.68)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.white, lineWidth: 2)
+                .padding(2)
+            
+            Ellipse()
+                .fill(.white.opacity(0.95))
+                .frame(
+                    width: width * 0.76,
+                    height: height * 0.75
+                )
+                .rotationEffect(.degrees(-25))
+            
+            Text("UNO")
+                .font(
+                    .system(
+                        size: width * 0.27,
+                        weight: .black,
+                        design: .rounded
+                    )
+                )
+                .foregroundColor(.purple)
+                .rotationEffect(.degrees(-25))
+            
+            Image(systemName: "sparkle")
+                .font(.system(size: width * 0.2, weight: .bold))
+                .foregroundColor(.white)
+                .offset(
+                    x: width * 0.29,
+                    y: -height * 0.37
+                )
+            
+            Image(systemName: "heart.fill")
+                .font(.system(size: width * 0.18))
+                .foregroundColor(.white)
+                .offset(
+                    x: -width * 0.29,
+                    y: height * 0.35
+                )
+        }
+        .frame(width: width, height: height)
+        .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
+    }
+    
+    // MARK: - DECK
+    
+    private func makeDeck() -> [UnoCard] {
+        var cards: [UnoCard] = []
+        
+        for color in [
+            UnoColor.red,
+            .blue,
+            .green,
+            .yellow
+        ] {
+            cards.append(UnoCard(color: color, value: "0"))
+            
+            for value in 1...9 {
+                cards.append(UnoCard(color: color, value: "\(value)"))
+                cards.append(UnoCard(color: color, value: "\(value)"))
+            }
+            
+            for value in ["Skip", "Reverse", "+2"] {
+                cards.append(UnoCard(color: color, value: value))
+                cards.append(UnoCard(color: color, value: value))
+            }
+        }
+        
+        for _ in 0..<4 {
+            cards.append(UnoCard(color: .wild, value: "Wild"))
+            cards.append(UnoCard(color: .wild, value: "+4"))
+        }
+        
+        return cards.shuffled()
+    }
+    
+    // MARK: - START GAME
+    
+    private func startGame() {
+        var newDeck = makeDeck()
+        
+        let openingIndex = newDeck.firstIndex { !$0.isWild } ?? 0
+        let openingCard = newDeck.remove(at: openingIndex)
+        
+        hands = [[], [], [], []]
+        deck = newDeck
+        discard = [openingCard]
+        activeColor = openingCard.color
+        
+        currentPlayer = 0
+        direction = 1
+        gameStarted = true
+        isBusy = true
+        isDealing = true
+        dealProgress = 0
+        
+        message = isThai ? "กำลังแจกไพ่..." : "Dealing cards..."
+        unoCalled = false
+        playedCardID = nil
+        showWinner = false
+        
+        AudioServicesPlaySystemSound(1104)
+        dealNextCard(0)
+    }
+    
+    // MARK: - DEAL CARDS ONE BY ONE
+    
+    private func dealNextCard(_ index: Int) {
+        guard index < 28 else {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                isDealing = false
+                isBusy = false
+                message = isThai
+                ? "แจกไพ่เสร็จแล้ว! ถึงตาคุณ"
+                : "Cards dealt! Your turn"
+            }
+            return
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) {
+            let player = index % 4
+            
+            guard !deck.isEmpty else {
+                isDealing = false
+                isBusy = false
+                return
+            }
+            
+            let card = deck.removeFirst()
+            
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.7)) {
+                hands[player].append(card)
+                dealProgress += 1
+            }
+            
+            AudioServicesPlaySystemSound(1104)
+            dealNextCard(index + 1)
+        }
+    }
+    
+    // MARK: - PLAY RULES
+    
+    private func canPlay(_ card: UnoCard) -> Bool {
+        guard let topCard = discard.last else {
+            return true
+        }
+        
+        return card.isWild ||
+        card.color == activeColor ||
+        card.value == topCard.value
+    }
+    
+    private func drawCards(_ count: Int, for player: Int) {
+        for _ in 0..<count {
+            if deck.isEmpty {
+                if discard.count > 1 {
+                    let topCard = discard.removeLast()
+                    deck = discard.shuffled()
+                    discard = [topCard]
+                } else {
+                    return
+                }
+            }
+            
+            if !deck.isEmpty {
+                let card = deck.removeFirst()
+                
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    hands[player].append(card)
+                }
+            }
+        }
+    }
+    
+    // MARK: - PLAYER ACTIONS
+    
+    private func drawForPlayer() {
+        guard currentPlayer == 0,
+              !isBusy,
+              !isDealing else {
+            return
+        }
+        
+        isBusy = true
+        drawCards(1, for: 0)
+        
+        message = isThai ? "คุณจั่วการ์ด 1 ใบ" : "You drew a card"
+        AudioServicesPlaySystemSound(1104)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+            advanceTurn()
+        }
+    }
+    
+    private func playPlayerCard(_ card: UnoCard) {
+        guard currentPlayer == 0,
+              !isBusy,
+              !isDealing,
+              canPlay(card) else {
+            return
+        }
+        
+        playCard(card, by: 0)
+    }
+    
+    // MARK: - PLAY CARD WITH ANIMATION
+    
+    private func playCard(_ card: UnoCard, by player: Int) {
+        guard let cardIndex = hands[player].firstIndex(of: card) else {
+            return
+        }
+        
+        isBusy = true
+        
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.55)) {
+            hands[player].remove(at: cardIndex)
+            discard.append(card)
+            playedCardID = card.id
+        }
+        
+        if card.isWild {
+            activeColor = chooseColor(for: player)
+        } else {
+            activeColor = card.color
+        }
+        
+        AudioServicesPlaySystemSound(1104)
+        
+        message = player == 0
+        ? (isThai ? "คุณลง \(card.value)" : "You played \(card.value)")
+        : "\(aiNames[player]) played \(card.value)"
+        
+        if hands[player].isEmpty {
+            winnerName = player == 0
+            ? (isThai ? "คุณ" : "You")
+            : aiNames[player]
+            
+            isBusy = false
+            showWinner = true
+            return
+        }
+        
+        if player == 0 && hands[0].count == 1 && !unoCalled {
+            message = isThai
+            ? "เหลือ 1 ใบ! อย่าลืมกด UNO!"
+            : "One card left! Press UNO!"
+        }
+        
+        var steps = 1
+        
+        switch card.value {
+        case "Skip":
+            steps = 2
+            
+        case "Reverse":
+            direction *= -1
+            
+        case "+2":
+            let next = nextPlayer(from: player, steps: 1)
+            drawCards(2, for: next)
+            steps = 2
+            
+        case "+4":
+            let next = nextPlayer(from: player, steps: 1)
+            drawCards(4, for: next)
+            steps = 2
+            
+        default:
+            break
+        }
+        
+        let next = nextPlayer(from: player, steps: steps)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) {
+            currentPlayer = next
+            isBusy = false
+            runAITurnIfNeeded()
+        }
+    }
+    
+    private func nextPlayer(from player: Int, steps: Int) -> Int {
+        var next = player
+        
+        for _ in 0..<steps {
+            next = (next + direction + 4) % 4
+        }
+        
+        return next
+    }
+    
+    // MARK: - WILD COLOR CHOICE
+    
+    private func chooseColor(for player: Int) -> UnoColor {
+        let colors: [UnoColor] = [.red, .blue, .green, .yellow]
+        
+        let counts = Dictionary(
+            grouping: hands[player].filter { !$0.isWild },
+            by: { $0.color }
+        )
+            .mapValues { $0.count }
+        
+        return colors.max {
+            (counts[$0] ?? 0) < (counts[$1] ?? 0)
+        } ?? .red
+    }
+    
+    // MARK: - AI DIFFICULTY LOGIC
+    
+    private func chooseAICard(
+        from cards: [UnoCard],
+        player: Int
+    ) -> UnoCard? {
+        guard !cards.isEmpty else {
+            return nil
+        }
+        
+        switch difficulty {
+        case .easy:
+            // EASY: เลือกไพ่ที่ลงได้แบบสุ่ม
+            return cards.randomElement()
+            
+        case .medium:
+            // MEDIUM: เน้นใช้ไพ่พิเศษ
+            if let card = cards.first(where: { $0.value == "+4" }) {
+                return card
+            }
+            
+            if let card = cards.first(where: { $0.value == "+2" }) {
+                return card
+            }
+            
+            if let card = cards.first(where: { $0.value == "Skip" }) {
+                return card
+            }
+            
+            if let card = cards.first(where: { $0.value == "Reverse" }) {
+                return card
+            }
+            
+            return cards.randomElement()
+            
+        case .hard:
+            // HARD: เลือกไพ่ที่ได้คะแนนกลยุทธ์สูงสุด
+            return cards.max {
+                cardScore($0, player: player) <
+                    cardScore($1, player: player)
+            }
+        }
+    }
+    
+    // MARK: - HARD AI CARD SCORE
+    
+    private func cardScore(
+        _ card: UnoCard,
+        player: Int
+    ) -> Int {
+        var score = 0
+        
+        // คะแนนของไพ่แต่ละชนิด
+        switch card.value {
+        case "+4":
+            score += 20
+        case "+2":
+            score += 16
+        case "Skip":
+            score += 14
+        case "Wild":
+            score += 12
+        case "Reverse":
+            score += 10
+        default:
+            score += 1
+        }
+        
+        // เลือกสีที่ AI มีอยู่ในมือมาก
+        if !card.isWild {
+            let sameColorCount = hands[player].filter {
+                !$0.isWild && $0.color == card.color
+            }.count
+            
+            score += sameColorCount * 4
+        }
+        
+        // ขัดขวางผู้เล่นคนถัดไปเมื่อใกล้ชนะ
+        let next = nextPlayer(from: player, steps: 1)
+        
+        if next == 0 && hands[0].count <= 2 {
+            switch card.value {
+            case "+4":
+                score += 30
+            case "+2":
+                score += 25
+            case "Skip":
+                score += 22
+            default:
+                break
+            }
+        }
+        
+        // เพิ่มคะแนนไพ่โจมตีเมื่อมีคู่แข่งใกล้ชนะ
+        let opponentNearWin = hands.enumerated().contains {
+            $0.offset != player && $0.element.count <= 2
+        }
+        
+        if opponentNearWin {
+            switch card.value {
+            case "+4", "+2", "Skip":
+                score += 10
+            default:
+                break
+            }
+        }
+        
+        // ไพ่ตัวเลขสูงจะมีคะแนนเพิ่ม
+        if let number = Int(card.value) {
+            score += number
+        }
+        
+        return score
+    }
+    
+    // MARK: - AI TURNS
+    
+    private func runAITurnIfNeeded() {
+        guard gameStarted,
+              currentPlayer != 0,
+              !isBusy,
+              !isDealing,
+              !showWinner else {
+            return
+        }
+        
+        isBusy = true
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            let player = currentPlayer
+            let playableCards = hands[player].filter { canPlay($0) }
+            
+            let selectedCard = chooseAICard(
+                from: playableCards,
+                player: player
+            )
+            
+            if let card = selectedCard {
+                isBusy = false
+                playCard(card, by: player)
+            } else {
+                // HARD: จั่ว 2 ใบ / EASY และ MEDIUM: จั่ว 1 ใบ
+                let drawCount = difficulty == .hard ? 2 : 1
+                let handCountBeforeDraw = hands[player].count
+                
+                drawCards(drawCount, for: player)
+                
+                message = difficulty == .hard
+                ? "\(aiNames[player]) drew 2 cards"
+                : "\(aiNames[player]) drew a card"
+                
+                AudioServicesPlaySystemSound(1104)
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    // ตรวจสอบเฉพาะไพ่ที่เพิ่งจั่ว
+                    let drawnCards = Array(
+                        hands[player].dropFirst(handCountBeforeDraw)
+                    )
+                    
+                    let newPlayableCards = drawnCards.filter {
+                        canPlay($0)
+                    }
+                    
+                    if let newCard = chooseAICard(
+                        from: newPlayableCards,
+                        player: player
+                    ) {
+                        isBusy = false
+                        playCard(newCard, by: player)
+                    } else {
+                        currentPlayer = nextPlayer(
+                            from: player,
+                            steps: 1
+                        )
+                        
+                        isBusy = false
+                        runAITurnIfNeeded()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func advanceTurn() {
+        currentPlayer = nextPlayer(
+            from: currentPlayer,
+            steps: 1
+        )
+        
+        isBusy = false
+        runAITurnIfNeeded()
+    }
+    
+    // MARK: - UNO BUTTON
+    
+    private func callUno() {
+        guard currentPlayer == 0,
+              hands[0].count == 1 else {
+            return
+        }
+        
+        unoCalled = true
+        message = isThai
+        ? "UNO! คุณเหลือไพ่ 1 ใบ"
+        : "UNO! One card left"
+        
+        AudioServicesPlaySystemSound(1057)
+    }
+    
+    // MARK: - RULES
+    
+    private var rulesView: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 15) {
+                    Text(isThai ? "วิธีเล่น UNO" : "How to Play UNO")
+                        .font(.system(size: 24, weight: .black))
+                    
+                    Text(isThai
+                         ? """
+                         • มีผู้เล่น 1 คน และ AI 3 คน
+                         • ผู้เล่นแต่ละคนเริ่มต้นด้วยไพ่ 7 ใบ
+                         • ลงไพ่ให้ตรงสีหรือตัวเลขกับใบบนสุด
+                         • หากไม่มีไพ่ที่ลงได้ ให้จั่วไพ่ 1 ใบ
+                         • ผู้ที่ลงไพ่หมดก่อนเป็นผู้ชนะ
+                         • เมื่อเหลือไพ่ 1 ใบ ให้กด UNO!
+                         """
+                         : """
+                         • One human player and three AI opponents.
+                         • Each player starts with 7 cards.
+                         • Match the color or number of the top card.
+                         • Draw one card if you cannot play.
+                         • The first player to run out of cards wins.
+                         • Press UNO! when you have one card left.
+                         """)
+                    .font(.system(size: 16))
+                    .lineSpacing(6)
+                    
+                    Divider()
+                    
+                    Text(isThai
+                         ? """
+                         การ์ดพิเศษ
+                         
+                         Skip: ข้ามตาผู้เล่นถัดไป
+                         Reverse: เปลี่ยนทิศทางการเล่น
+                         +2: ผู้เล่นถัดไปจั่ว 2 ใบและถูกข้ามตา
+                         Wild: เปลี่ยนสีที่กำลังเล่น
+                         +4: ผู้เล่นถัดไปจั่ว 4 ใบและถูกข้ามตา
+                         """
+                         : """
+                         Special Cards
+                         
+                         Skip: Skip the next player.
+                         Reverse: Reverse the direction.
+                         +2: Next player draws two and loses a turn.
+                         Wild: Change the active color.
+                         +4: Next player draws four and loses a turn.
+                         """)
+                    .font(.system(size: 15))
+                    .lineSpacing(5)
+                }
+                .padding(22)
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(isThai ? "ปิด" : "Close") {
+                        showRules = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+
